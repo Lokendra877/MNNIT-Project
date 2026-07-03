@@ -28,6 +28,16 @@ import os                              # Check if files exist
 import matplotlib.pyplot as plt        # Plotting
 import seaborn as sns                  # Correlation heatmap styling
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+
+# XGBoost is optional — the app still runs without it, just skips that chart
+try:
+    from xgboost import XGBRegressor
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
 
 
 # -------------------------------------------------------------------
@@ -50,9 +60,9 @@ st.markdown("""
 
         .main-title {
             text-align: center;
-            font-size: 2.6rem;
+            font-size: 2.4rem;
             font-weight: 800;
-            color: #d90b45;
+            color: #dc2626;
             margin-bottom: 0.2rem;
         }
         .sub-title {
@@ -551,7 +561,7 @@ with tab2:
                 corr_df = encoded_df[FEATURE_ORDER + ["G3"]].dropna()
                 corr_matrix = corr_df.corr()
 
-                fig3, ax3 = plt.subplots(figsize=(10, 4))
+                fig3, ax3 = plt.subplots(figsize=(8, 4))
                 sns.heatmap(
                     corr_matrix,
                     annot=False,
@@ -572,7 +582,7 @@ with tab2:
 
                 g3_corr = corr_matrix["G3"].drop("G3").sort_values(key=abs, ascending=False).head(10)
 
-                fig4, ax4 = plt.subplots(figsize=(6, 2.5))
+                fig4, ax4 = plt.subplots(figsize=(5, 2))
                 colors = ["#16a34a" if v > 0 else "#dc2626" for v in g3_corr.values]
                 ax4.barh(g3_corr.index[::-1], g3_corr.values[::-1], color=colors[::-1])
                 ax4.set_xlabel("Correlation with G3")
@@ -591,12 +601,121 @@ with tab2:
                     importances = pd.Series(model.feature_importances_, index=FEATURE_ORDER)
                     importances = importances.sort_values(ascending=False).head(15)
 
-                    fig5, ax5 = plt.subplots(figsize=(8,4))
-                    ax5.barh(importances.index[::-1], importances.values[::-1], color="#4f46e5")
+                    fig5, ax5 = plt.subplots(figsize=(5, 4))
+                    ax5.barh(importances.index[::-1], importances.values[::-1], color="#0e937a")
                     ax5.set_xlabel("Importance")
                     ax5.set_title("Top 15 Most Important Features")
                     fig5.tight_layout()
                     st.pyplot(fig5)
+
+                # -------------------------------------------------------
+                # ALGORITHM COMPARISON — Linear Regression, Random Forest,
+                # XGBoost (trained here ONLY for comparison charts — this
+                # does NOT touch or replace your saved model.pkl in any way)
+                # -------------------------------------------------------
+                st.markdown("---")
+                st.markdown("####Algorithm Comparison")
+                st.caption(
+                    "For comparison purposes only, Linear Regression, Random Forest, "
+                    "and XGBoost are trained fresh (80/20 train-test split) on the same "
+                    "student.csv features. Your original model.pkl is never modified — "
+                    "'Your Model (model.pkl)' below is evaluated on the same test split "
+                    "for a fair comparison."
+                )
+
+                @st.cache_resource
+                def train_comparison_models(X_data, y_data):
+                    """
+                    Trains Linear Regression, Random Forest, and (if available)
+                    XGBoost on an 80/20 split purely for comparison charts.
+                    Cached so this only runs once per dataset, not on every
+                    Streamlit rerun.
+                    """
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X_data, y_data, test_size=0.2, random_state=42
+                    )
+
+                    results = {}
+
+                    lin_reg = LinearRegression()
+                    lin_reg.fit(X_train, y_train)
+                    results["Linear Regression"] = lin_reg.predict(X_test)
+
+                    rf_reg = RandomForestRegressor(n_estimators=200, random_state=42)
+                    rf_reg.fit(X_train, y_train)
+                    results["Random Forest"] = rf_reg.predict(X_test)
+
+                    if XGBOOST_AVAILABLE:
+                        xgb_reg = XGBRegressor(
+                            n_estimators=200, learning_rate=0.1,
+                            max_depth=4, random_state=42, verbosity=0
+                        )
+                        xgb_reg.fit(X_train, y_train)
+                        results["XGBoost"] = xgb_reg.predict(X_test)
+
+                    # Also evaluate the user's own saved model.pkl on the SAME test split
+                    results["Your Model (model.pkl)"] = model.predict(X_test)
+
+                    return results, y_test
+
+                try:
+                    comparison_preds, y_test_common = train_comparison_models(X_valid, y_valid)
+
+                    comparison_rows = []
+                    for model_name, preds in comparison_preds.items():
+                        comparison_rows.append({
+                            "Model": model_name,
+                            "R2 Score": r2_score(y_test_common, preds),
+                            "MAE": mean_absolute_error(y_test_common, preds),
+                            "RMSE": np.sqrt(mean_squared_error(y_test_common, preds)),
+                        })
+
+                    comparison_df = pd.DataFrame(comparison_rows).sort_values(
+                        "R2 Score", ascending=False
+                    ).reset_index(drop=True)
+
+                    if not XGBOOST_AVAILABLE:
+                        st.info(
+                            "ℹ️ XGBoost is not installed, so it's skipped in the chart below. "
+                            "Run `pip install xgboost` and refresh the app to include it."
+                        )
+
+                    # ---- R2 Score comparison bar chart ----
+                    comp_col1, comp_col2 = st.columns(2)
+
+                    with comp_col1:
+                        fig6, ax6 = plt.subplots(figsize=(6, 4.5))
+                        bar_colors = ["#089a56", "#89e6ab", "#f59e0b", "#dc2626"][:len(comparison_df)]
+                        ax6.bar(comparison_df["Model"], comparison_df["R2 Score"], color=bar_colors)
+                        ax6.set_ylabel("R² Score")
+                        ax6.set_title("R² Score Comparison")
+                        ax6.set_ylim(0, 1)
+                        plt.setp(ax6.get_xticklabels(), rotation=20, ha="right")
+                        fig6.tight_layout()
+                        st.pyplot(fig6)
+
+                    # ---- RMSE comparison bar chart ----
+                    with comp_col2:
+                        fig7, ax7 = plt.subplots(figsize=(6, 4.5))
+                        ax7.bar(comparison_df["Model"], comparison_df["RMSE"], color=bar_colors)
+                        ax7.set_ylabel("RMSE (lower is better)")
+                        ax7.set_title("RMSE Comparison")
+                        plt.setp(ax7.get_xticklabels(), rotation=20, ha="right")
+                        fig7.tight_layout()
+                        st.pyplot(fig7)
+
+                    # ---- Comparison table ----
+                    st.markdown("##### 📋 Detailed Comparison Table")
+                    st.dataframe(
+                        comparison_df.style.format({
+                            "R2 Score": "{:.3f}", "MAE": "{:.2f}", "RMSE": "{:.2f}"
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                except Exception as e:
+                    st.error(f"❌ Could not run algorithm comparison: {e}")
 
 
 # -------------------------------------------------------------------
